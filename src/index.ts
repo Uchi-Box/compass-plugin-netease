@@ -357,6 +357,8 @@ class NeteaseDataSourcePlugin {
     this.nickname = null
     await this.context?.credentials?.set('userId', '')
     await this.context?.credentials?.set('nickname', '')
+    // Clear cookies from the plugin's session partition so the login page resets
+    await this.context?.clearSessionData?.()
     this.context?.notifications?.addSuccess('已退出登录')
     this.notifyPanelChange()
   }

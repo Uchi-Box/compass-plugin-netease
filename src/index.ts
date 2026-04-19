@@ -158,7 +158,7 @@ class NeteaseDataSourcePlugin {
       })
       elements.push({
         type: 'button',
-        label: '扫码登录',
+        label: '登录',
         command: 'netease:login',
         variant: 'primary',
       })

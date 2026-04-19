@@ -1,0 +1,13 @@
+{
+  "id": "com.compass.netease",
+  "name": "网易云音乐",
+  "version": "0.1.0",
+  "description": "搜索和播放网易云音乐，支持登录同步歌单",
+  "author": "Compass Music Team",
+  "platforms": ["all"],
+  "main": "dist/index.js",
+  "brandColor": "#e72d2c",
+  "capabilities": {
+    "dataSource": true
+  }
+}

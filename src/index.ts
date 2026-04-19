@@ -55,33 +55,15 @@ class NeteaseDataSourcePlugin {
   private context: any = null
   private client: NeteaseApiClient | null = null
   private userId: number | null = null
+  private nickname: string | null = null
   private qrPollTimer: ReturnType<typeof setInterval> | null = null
+  private panelChangeCallback: (() => void) | null = null
+  private syncing = false
+  private panelDisposable: any = null
 
   private settings: NeteaseSettings = {
     searchLimit: 30,
     audioQuality: 'exhigh',
-  }
-
-  // DataSourceAuthInfo — enables login UI in Compass settings
-  auth = {
-    required: false as const,
-    loginLabel: '二维码登录',
-    getStatus: async (): Promise<'authenticated' | 'unauthenticated' | 'expired' | 'checking'> => {
-      if (!this.client) return 'unauthenticated'
-      try {
-        const user = await this.client.getLoginStatus()
-        return user ? 'authenticated' : 'unauthenticated'
-      } catch {
-        return 'expired'
-      }
-    },
-    login: async (): Promise<boolean> => {
-      await this.startQrLogin()
-      return !!this.userId
-    },
-    logout: async (): Promise<void> => {
-      await this.logout()
-    },
   }
 
   // --- Lifecycle ---
@@ -118,15 +100,91 @@ class NeteaseDataSourcePlugin {
     const storedUid = await context.credentials?.get('userId')
     if (storedUid) {
       this.userId = Number(storedUid)
+      this.nickname = (await context.credentials?.get('nickname')) || null
       context.log('info', `Restored Netease session for uid: ${this.userId}`)
     }
+
+    // Register settings panel for login/sync UI
+    this.registerSettingsPanel(context)
 
     context.log('info', 'Netease Cloud Music plugin activated (direct mode)')
   }
 
   async deactivate(): Promise<void> {
     this.stopQrPoll()
+    this.panelDisposable?.dispose()
     this.context?.log('info', 'Netease Cloud Music plugin deactivated')
+  }
+
+  // --- Settings Panel ---
+
+  private registerSettingsPanel(context: any): void {
+    if (!context.registerSettingsPanel) return
+
+    this.panelDisposable = context.registerSettingsPanel({
+      render: () => this.renderSettingsPanel(),
+      onDidChange: (callback: () => void) => {
+        this.panelChangeCallback = callback
+        return { dispose: () => { this.panelChangeCallback = null } }
+      },
+    })
+  }
+
+  private notifyPanelChange(): void {
+    this.panelChangeCallback?.()
+  }
+
+  private renderSettingsPanel(): any[] {
+    const elements: any[] = []
+
+    if (this.userId) {
+      // Logged in
+      elements.push({
+        type: 'status',
+        label: '账号',
+        value: this.nickname ?? `UID: ${this.userId}`,
+        variant: 'success',
+      })
+      elements.push({
+        type: 'button-group',
+        children: [
+          { type: 'button', label: '同步歌单', command: 'netease:sync-playlists', variant: 'primary', disabled: this.syncing },
+          { type: 'button', label: '退出登录', command: 'netease:logout', variant: 'danger' },
+        ],
+      })
+    } else {
+      // Not logged in
+      elements.push({
+        type: 'status',
+        label: '账号',
+        value: '未登录',
+      })
+      elements.push({
+        type: 'button',
+        label: '扫码登录',
+        command: 'netease:login',
+        variant: 'primary',
+        disabled: !!this.qrPollTimer,
+      })
+    }
+
+    if (this.qrPollTimer) {
+      elements.push({
+        type: 'text',
+        content: '等待扫码中…请在网易云音乐 APP 扫描弹出的二维码',
+        variant: 'muted',
+      })
+    }
+
+    if (this.syncing) {
+      elements.push({
+        type: 'text',
+        content: '正在同步歌单，请稍候…',
+        variant: 'muted',
+      })
+    }
+
+    return elements
   }
 
   // --- DataSource: search ---
@@ -321,6 +379,7 @@ class NeteaseDataSourcePlugin {
       attempts++
       if (attempts > MAX_ATTEMPTS) {
         this.stopQrPoll()
+        this.notifyPanelChange()
         this.context?.notifications?.addError('二维码已过期，请重新登录')
         return
       }
@@ -331,6 +390,7 @@ class NeteaseDataSourcePlugin {
         switch (code) {
           case 800:
             this.stopQrPoll()
+            this.notifyPanelChange()
             this.context?.notifications?.addError('二维码已过期，请重新登录')
             break
 
@@ -340,6 +400,7 @@ class NeteaseDataSourcePlugin {
             const user = await this.client!.getLoginStatus()
             if (user) {
               this.userId = user.userId
+              this.nickname = user.nickname
               await this.context?.credentials?.set('userId', String(user.userId))
               await this.context?.credentials?.set('nickname', user.nickname)
               this.context?.notifications?.addSuccess(
@@ -349,6 +410,7 @@ class NeteaseDataSourcePlugin {
             } else {
               this.context?.notifications?.addError('登录成功但无法获取用户信息，请重试')
             }
+            this.notifyPanelChange()
             break
           }
 
@@ -365,6 +427,8 @@ class NeteaseDataSourcePlugin {
         this.context?.log('warn', 'QR poll error:', error)
       }
     }, 2000)
+
+    this.notifyPanelChange()
   }
 
   private stopQrPoll(): void {
@@ -384,18 +448,23 @@ class NeteaseDataSourcePlugin {
 
     const user = await this.client!.getLoginStatus()
     if (user) {
+      this.nickname = user.nickname
       this.context?.notifications?.addInfo(`已登录: ${user.nickname}`)
     } else {
       this.context?.notifications?.addInfo('登录已过期，请重新登录')
       this.userId = null
+      this.nickname = null
+      this.notifyPanelChange()
     }
   }
 
   private async logout(): Promise<void> {
     this.userId = null
+    this.nickname = null
     await this.context?.credentials?.set('userId', '')
     await this.context?.credentials?.set('nickname', '')
     this.context?.notifications?.addSuccess('已退出登录')
+    this.notifyPanelChange()
   }
 
   // --- Playlist Sync ---
@@ -417,6 +486,9 @@ class NeteaseDataSourcePlugin {
       this.context?.notifications?.addError('歌单/曲库 API 不可用')
       return
     }
+
+    this.syncing = true
+    this.notifyPanelChange()
 
     try {
       this.context?.notifications?.addInfo('正在同步网易云歌单…')
@@ -462,6 +534,9 @@ class NeteaseDataSourcePlugin {
     } catch (error: any) {
       this.context?.log('error', 'Playlist sync failed:', error)
       this.context?.notifications?.addError(`同步失败: ${error?.message ?? String(error)}`)
+    } finally {
+      this.syncing = false
+      this.notifyPanelChange()
     }
   }
 

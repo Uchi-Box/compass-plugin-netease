@@ -1,11 +1,10 @@
 // ============================================================================
 // Compass Plugin — Netease Cloud Music
-// DataSource plugin: search, stream, lyrics, QR login, playlist sync
+// DataSource plugin: search, stream, lyrics, login, playlist sync
 // Self-contained: calls music.163.com directly via weapi encryption.
 // Cookies are managed automatically by the plugin's Electron session partition.
 // ============================================================================
 
-import QRCode from 'qrcode'
 import { NeteaseApiClient, type NeteaseTrack } from './api-client'
 
 const PLUGIN_ID = 'compass-plugin-netease'
@@ -56,7 +55,6 @@ class NeteaseDataSourcePlugin {
   private client: NeteaseApiClient | null = null
   private userId: number | null = null
   private nickname: string | null = null
-  private qrPollTimer: ReturnType<typeof setInterval> | null = null
   private panelChangeCallback: (() => void) | null = null
   private syncing = false
   private panelDisposable: any = null
@@ -111,7 +109,6 @@ class NeteaseDataSourcePlugin {
   }
 
   async deactivate(): Promise<void> {
-    this.stopQrPoll()
     this.panelDisposable?.dispose()
     this.context?.log('info', 'Netease Cloud Music plugin deactivated')
   }
@@ -164,15 +161,6 @@ class NeteaseDataSourcePlugin {
         label: '扫码登录',
         command: 'netease:login',
         variant: 'primary',
-        disabled: !!this.qrPollTimer,
-      })
-    }
-
-    if (this.qrPollTimer) {
-      elements.push({
-        type: 'text',
-        content: '等待扫码中…请在网易云音乐 APP 扫描弹出的二维码',
-        variant: 'muted',
       })
     }
 
@@ -295,147 +283,68 @@ class NeteaseDataSourcePlugin {
 
   private registerCommands(context: any): void {
     context.commands.add('global', {
-      'netease:login': () => this.startQrLogin(),
+      'netease:login': () => this.login(),
       'netease:logout': () => this.logout(),
       'netease:sync-playlists': () => this.syncPlaylists(),
       'netease:check-status': () => this.showLoginStatus(),
     })
   }
 
-  // --- QR Login ---
+  // --- Login via Auth Window ---
 
-  private async startQrLogin(): Promise<void> {
-    if (!this.client) {
-      this.context?.notifications?.addError('插件未初始化')
+  private async login(): Promise<void> {
+    if (!this.context?.openAuthWindow) {
+      this.context?.notifications?.addError('当前平台不支持登录')
       return
     }
 
-    this.stopQrPoll()
-
     try {
-      this.context?.notifications?.addInfo('正在生成登录二维码…')
+      // Open NetEase login page in auth window.
+      // The window uses the plugin's isolated session partition,
+      // so cookies (MUSIC_U, __csrf) are captured automatically.
+      // injectScript polls for MUSIC_U cookie — when present, login succeeded.
+      await this.context.openAuthWindow(
+        'https://music.163.com/#/login',
+        {
+          width: 900,
+          height: 650,
+          title: '网易云音乐 — 登录',
+          injectScript: `
+            new Promise((resolve) => {
+              const check = () => {
+                const musicU = document.cookie.split(';')
+                  .map(c => c.trim())
+                  .find(c => c.startsWith('MUSIC_U='));
+                if (musicU) {
+                  resolve({ loggedIn: true });
+                } else {
+                  setTimeout(check, 1500);
+                }
+              };
+              check();
+            })
+          `,
+        },
+      )
 
-      const unikey = await this.client.getQrKey()
-      const qrUrl = `https://music.163.com/login?codekey=${unikey}`
-      const qrSvg = await QRCode.toString(qrUrl, { type: 'svg', width: 220, margin: 2 })
-      const html = this.buildQrLoginPage(qrSvg)
-
-      // Fire-and-forget: open auth window to display QR code.
-      // Login is detected via background polling, not via window redirect.
-      this.context?.openAuthWindow?.(
-        `data:text/html;base64,${btoa(unescape(encodeURIComponent(html)))}`,
-        { width: 420, height: 520, title: '网易云音乐 — 扫码登录' },
-      ).catch(() => {
-        // User closed the window manually — that's fine
-      })
-
-      this.startQrPoll(unikey)
-    } catch (error: any) {
-      this.context?.log('error', 'QR login failed:', error)
-      this.context?.notifications?.addError(`登录失败: ${error?.message ?? String(error)}`)
-    }
-  }
-
-  private buildQrLoginPage(qrSvg: string): string {
-    return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-      margin: 0;
-      background: #1a1a2e;
-      color: #e0e0e0;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    }
-    h2 { color: #e72d2c; margin-bottom: 8px; }
-    p { color: #999; font-size: 14px; margin-top: 4px; }
-    .qr { border-radius: 12px; margin: 16px 0; background: white; padding: 8px; width: 200px; height: 200px; }
-    .qr svg { width: 200px; height: 200px; }
-    .status { font-size: 13px; color: #aaa; }
-  </style>
-</head>
-<body>
-  <h2>网易云音乐</h2>
-  <p>使用网易云音乐 APP 扫描二维码</p>
-  <div class="qr">${qrSvg}</div>
-  <p class="status" id="status">等待扫码…</p>
-</body>
-</html>`
-  }
-
-  private startQrPoll(unikey: string): void {
-    this.stopQrPoll()
-
-    let attempts = 0
-    const MAX_ATTEMPTS = 150 // 5 minutes at 2s interval
-
-    this.qrPollTimer = setInterval(async () => {
-      attempts++
-      if (attempts > MAX_ATTEMPTS) {
-        this.stopQrPoll()
-        this.notifyPanelChange()
-        this.context?.notifications?.addError('二维码已过期，请重新登录')
-        return
+      // After window closes, verify login status via API
+      const user = await this.client?.getLoginStatus()
+      if (user) {
+        this.userId = user.userId
+        this.nickname = user.nickname
+        await this.context?.credentials?.set('userId', String(user.userId))
+        await this.context?.credentials?.set('nickname', user.nickname)
+        this.context?.notifications?.addSuccess(`登录成功！欢迎 ${user.nickname}`)
+        this.context?.log('info', `Netease login success: ${user.nickname} (${user.userId})`)
+      } else {
+        this.context?.notifications?.addError('未检测到登录状态，请重试')
       }
-
-      try {
-        const code = await this.client!.checkQr(unikey)
-
-        switch (code) {
-          case 800:
-            this.stopQrPoll()
-            this.notifyPanelChange()
-            this.context?.notifications?.addError('二维码已过期，请重新登录')
-            break
-
-          case 803: {
-            // Login success — session cookies (MUSIC_U, __csrf) are now stored
-            this.stopQrPoll()
-            const user = await this.client!.getLoginStatus()
-            if (user) {
-              this.userId = user.userId
-              this.nickname = user.nickname
-              await this.context?.credentials?.set('userId', String(user.userId))
-              await this.context?.credentials?.set('nickname', user.nickname)
-              this.context?.notifications?.addSuccess(
-                `登录成功！欢迎 ${user.nickname}，请关闭二维码窗口`,
-              )
-              this.context?.log('info', `Netease login success: ${user.nickname} (${user.userId})`)
-            } else {
-              this.context?.notifications?.addError('登录成功但无法获取用户信息，请重试')
-            }
-            this.notifyPanelChange()
-            break
-          }
-
-          case 802:
-            // Scanned, waiting for confirmation — do nothing, keep polling
-            break
-
-          case 801:
-          default:
-            // Waiting for scan — do nothing
-            break
-        }
-      } catch (error) {
-        this.context?.log('warn', 'QR poll error:', error)
-      }
-    }, 2000)
+    } catch {
+      // User closed window without logging in — that's fine
+      this.context?.log('info', 'Login window closed')
+    }
 
     this.notifyPanelChange()
-  }
-
-  private stopQrPoll(): void {
-    if (this.qrPollTimer) {
-      clearInterval(this.qrPollTimer)
-      this.qrPollTimer = null
-    }
   }
 
   // --- Auth helpers ---

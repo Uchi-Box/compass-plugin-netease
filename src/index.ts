@@ -302,46 +302,31 @@ class NeteaseDataSourcePlugin {
       // Open NetEase login page in auth window.
       // The window uses the plugin's isolated session partition,
       // so cookies (MUSIC_U, __csrf) are captured automatically.
-      // injectScript polls for MUSIC_U cookie — when present, login succeeded.
+      // User logs in via any method, then closes the window.
       await this.context.openAuthWindow(
         'https://music.163.com/#/login',
         {
           width: 900,
           height: 650,
           title: '网易云音乐 — 登录',
-          injectScript: `
-            new Promise((resolve) => {
-              const check = () => {
-                const musicU = document.cookie.split(';')
-                  .map(c => c.trim())
-                  .find(c => c.startsWith('MUSIC_U='));
-                if (musicU) {
-                  resolve({ loggedIn: true });
-                } else {
-                  setTimeout(check, 1500);
-                }
-              };
-              check();
-            })
-          `,
         },
       )
-
-      // After window closes, verify login status via API
-      const user = await this.client?.getLoginStatus()
-      if (user) {
-        this.userId = user.userId
-        this.nickname = user.nickname
-        await this.context?.credentials?.set('userId', String(user.userId))
-        await this.context?.credentials?.set('nickname', user.nickname)
-        this.context?.notifications?.addSuccess(`登录成功！欢迎 ${user.nickname}`)
-        this.context?.log('info', `Netease login success: ${user.nickname} (${user.userId})`)
-      } else {
-        this.context?.notifications?.addError('未检测到登录状态，请重试')
-      }
     } catch {
-      // User closed window without logging in — that's fine
-      this.context?.log('info', 'Login window closed')
+      // User closed window — expected behavior
+    }
+
+    // Check login status regardless of how the window was closed.
+    // Cookies are already persisted in the plugin's session partition.
+    const user = await this.client?.getLoginStatus()
+    if (user) {
+      this.userId = user.userId
+      this.nickname = user.nickname
+      await this.context?.credentials?.set('userId', String(user.userId))
+      await this.context?.credentials?.set('nickname', user.nickname)
+      this.context?.notifications?.addSuccess(`登录成功！欢迎 ${user.nickname}`)
+      this.context?.log('info', `Netease login success: ${user.nickname} (${user.userId})`)
+    } else if (!this.userId) {
+      this.context?.notifications?.addInfo('未检测到登录，请登录后关闭窗口')
     }
 
     this.notifyPanelChange()

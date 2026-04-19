@@ -259,8 +259,8 @@ class NeteaseDataSourcePlugin {
 
       const unikey = await this.client.getQrKey()
       const qrUrl = `https://music.163.com/login?codekey=${unikey}`
-      const qrDataUrl = await QRCode.toDataURL(qrUrl, { width: 220, margin: 2 })
-      const html = this.buildQrLoginPage(qrDataUrl)
+      const qrSvg = await QRCode.toString(qrUrl, { type: 'svg', width: 220, margin: 2 })
+      const html = this.buildQrLoginPage(qrSvg)
 
       // Fire-and-forget: open auth window to display QR code.
       // Login is detected via background polling, not via window redirect.
@@ -278,7 +278,7 @@ class NeteaseDataSourcePlugin {
     }
   }
 
-  private buildQrLoginPage(qrDataUrl: string): string {
+  private buildQrLoginPage(qrSvg: string): string {
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -297,14 +297,15 @@ class NeteaseDataSourcePlugin {
     }
     h2 { color: #e72d2c; margin-bottom: 8px; }
     p { color: #999; font-size: 14px; margin-top: 4px; }
-    img { border-radius: 12px; margin: 16px 0; }
+    .qr { border-radius: 12px; margin: 16px 0; background: white; padding: 8px; width: 200px; height: 200px; }
+    .qr svg { width: 200px; height: 200px; }
     .status { font-size: 13px; color: #aaa; }
   </style>
 </head>
 <body>
   <h2>网易云音乐</h2>
   <p>使用网易云音乐 APP 扫描二维码</p>
-  <img src="${qrDataUrl}" width="200" height="200" />
+  <div class="qr">${qrSvg}</div>
   <p class="status" id="status">等待扫码…</p>
 </body>
 </html>`

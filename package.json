@@ -1,7 +1,7 @@
 {
   "name": "compass-plugin-netease",
-  "version": "0.2.4",
-  "description": "Netease Cloud Music data source plugin for Compass Music — search, play, login, and sync playlists",
+  "version": "0.2.5",
+  "description": "Netease Cloud Music source plugin for Compass Music — search, play, login, and sync playlists",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -21,7 +21,7 @@
   "compass": {
     "id": "com.compass.netease",
     "name": "网易云音乐",
-    "version": "0.2.4",
+    "version": "0.2.5",
     "description": "搜索和播放网易云音乐，支持登录同步歌单",
     "author": "Compass Music Team",
     "platforms": [
@@ -29,13 +29,18 @@
     ],
     "main": "dist/index.js",
     "brandColor": "#e72d2c",
-    "capabilities": {
-      "dataSource": true
-    },
     "type": "plugin",
-    "pluginType": "data-source",
+    "contributes": {
+      "sources": [
+        {
+          "id": "netease",
+          "name": "网易云音乐",
+          "auth": "required",
+          "platforms": ["desktop", "mobile"]
+        }
+      ]
+    },
     "requestedCapabilities": [
-      "library",
       "playlists"
     ],
     "config": {

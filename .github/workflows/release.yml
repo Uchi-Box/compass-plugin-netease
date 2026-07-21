@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ['*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
+
+      # Desktop distribution: tarball extracted into ~/.compass/packages/<name>/
+      - name: Package desktop tarball
+        run: tar -czf plugin.tar.gz dist/ package.json
+
+      # Mobile distribution (Obsidian-style): a single-file ESM bundle plus an
+      # inline manifest. The mobile store reads these Release assets directly.
+      - name: Package mobile bundle + manifest
+        run: |
+          cp dist/index.js compass-plugin-netease.js
+          node -e "const p=require('./package.json'); require('fs').writeFileSync('manifest.json', JSON.stringify({ id: p.name, name: p.compass.name, version: p.version, description: p.compass.description, author: p.compass.author, brandColor: p.compass.brandColor, compass: { type: p.compass.type, platforms: p.compass.platforms, contributes: p.compass.contributes, requestedCapabilities: p.compass.requestedCapabilities, config: p.compass.config } }, null, 2))"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            plugin.tar.gz
+            compass-plugin-netease.js
+            manifest.json
+          generate_release_notes: true

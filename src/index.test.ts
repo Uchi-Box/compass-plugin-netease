@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { NeteaseApiClient } from './api-client'
 import { randomSecretKey, weapi, buildWEApiBody } from './crypto'
-import { NeteaseDataSourcePlugin } from './index'
+import { NeteasePlugin } from './index'
 
 // ============================================================================
 // Crypto Tests
@@ -260,15 +260,17 @@ describe('NeteaseApiClient', () => {
 
 describe('LRC Parsing', () => {
   it('should parse timed lyrics from plugin getLyrics', async () => {
-    const plugin = new NeteaseDataSourcePlugin()
+    const plugin = new NeteasePlugin()
 
     const mockContext: any = {
-      credentials: { get: vi.fn(async () => null), set: vi.fn() },
+      subscriptions: [],
+      secrets: { get: vi.fn(async () => null), set: vi.fn(), delete: vi.fn() },
       config: {
         get: vi.fn(() => null),
         observe: vi.fn(),
       },
-      fetch: createMockFetch({}),
+      net: { fetch: createMockFetch({}) },
+      sources: { register: vi.fn(() => ({ dispose: vi.fn() })) },
       log: vi.fn(),
       commands: { add: vi.fn() },
       notifications: {},
@@ -289,26 +291,90 @@ describe('LRC Parsing', () => {
       },
     }))
 
-    const result = await plugin.getLyrics({
-      source: { plugin: 'compass-plugin-netease', externalId: '123' },
-    })
+    const result = await plugin.getLyrics({ source: 'netease', id: '123' })
     expect(result).not.toBeNull()
-    expect(result.lines).toHaveLength(4)
+    expect(result!.lines).toHaveLength(4)
 
-    expect(result.lines[0].time).toBe(0)
-    expect(result.lines[0].text).toBe('Song Title')
+    expect(result!.lines![0].time).toBe(0)
+    expect(result!.lines![0].text).toBe('Song Title')
 
-    expect(result.lines[1].time).toBe(5500)
-    expect(result.lines[1].text).toBe('First line')
-    expect(result.lines[1].translation).toBe('第一行')
+    expect(result!.lines![1].time).toBe(5500)
+    // Translated lyrics are merged into the text (newline-separated).
+    expect(result!.lines![1].text).toBe('First line\n第一行')
 
-    expect(result.lines[2].time).toBe(10200)
-    expect(result.lines[2].text).toBe('Second line')
-    expect(result.lines[2].translation).toBe('第二行')
+    expect(result!.lines![2].time).toBe(10200)
+    expect(result!.lines![2].text).toBe('Second line\n第二行')
 
-    expect(result.lines[3].time).toBe(15000)
-    expect(result.lines[3].text).toBe('Third line')
-    expect(result.lines[3].translation).toBeUndefined()
+    expect(result!.lines![3].time).toBe(15000)
+    expect(result!.lines![3].text).toBe('Third line')
+  })
+})
+
+// ============================================================================
+// SourceProvider Registration Tests
+// ============================================================================
+
+describe('SourceProvider registration', () => {
+  function createMockContext() {
+    const registered: { id?: string; provider?: any } = {}
+    const ctx: any = {
+      subscriptions: [],
+      secrets: { get: vi.fn(async () => null), set: vi.fn(), delete: vi.fn() },
+      config: { get: vi.fn(() => null), observe: vi.fn() },
+      net: { fetch: createMockFetch({}) },
+      sources: {
+        register: vi.fn((id: string, provider: any) => {
+          registered.id = id
+          registered.provider = provider
+          return { dispose: vi.fn() }
+        }),
+      },
+      log: vi.fn(),
+      commands: { add: vi.fn() },
+      notifications: {},
+    }
+    return { ctx, registered }
+  }
+
+  it('registers the "netease" source and pushes its disposable', async () => {
+    const plugin = new NeteasePlugin()
+    const { ctx, registered } = createMockContext()
+
+    await plugin.activate(ctx)
+
+    expect(ctx.sources.register).toHaveBeenCalledTimes(1)
+    expect(registered.id).toBe('netease')
+    expect(typeof registered.provider.search).toBe('function')
+    expect(typeof registered.provider.resolveStream).toBe('function')
+    expect(registered.provider.auth).toBeDefined()
+    expect(ctx.subscriptions.length).toBeGreaterThan(0)
+  })
+
+  it('search returns results with a TrackRef ref shape', async () => {
+    const plugin = new NeteasePlugin()
+    const { ctx } = createMockContext()
+
+    await plugin.activate(ctx)
+    ;(plugin as any).client.search = vi.fn(async () => ({
+      songs: [
+        {
+          id: 42,
+          name: 'Test Song',
+          ar: [{ id: 1, name: 'Artist' }],
+          al: { id: 2, name: 'Album', picUrl: 'https://example.com/cover.jpg' },
+          dt: 210000,
+          fee: 0,
+          noCopyrightRcmd: null,
+        },
+      ],
+    }))
+
+    const results = await plugin.search('test')
+    expect(results).toHaveLength(1)
+    expect(results[0]!.ref).toEqual({ source: 'netease', id: '42' })
+    expect(results[0]!.title).toBe('Test Song')
+    expect(results[0]!.artist).toBe('Artist')
+    expect(results[0]!.duration).toBe(210)
   })
 })
 
